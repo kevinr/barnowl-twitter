@@ -16,11 +16,17 @@ package BarnOwl::Module::Twitter::Handle;
 
 
 use BarnOwl::Module::Twitter::Handle::Twitter;
+use BarnOwl::Module::Twitter::Handle::Facebook;
 
 sub new {
     my $class = shift;
+    my $cfg = shift;
+ 
+    if ($cfg->{service} =~ /facebook/i) {
+        return BarnOwl::Module::Twitter::Handle::Facebook->new($cfg, @_);
+    }
 
-    return BarnOwl::Module::Twitter::Handle::Twitter->new(@_);
+    return BarnOwl::Module::Twitter::Handle::Twitter->new($cfg, @_);
 }
 
 
