@@ -18,6 +18,7 @@ sub service { return (shift->{"service"} || "http://twitter.com"); }
 sub account { return shift->{"account"}; }
 sub long_sender {
     my $self = shift;
+    return $self->{zsig} if defined $self->{zsig};
     $self->service =~ m#^\s*(.*?://.*?)/.*$#;
     my $service = $1 || $self->service;
     return $service . '/' . $self->sender

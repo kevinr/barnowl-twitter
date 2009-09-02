@@ -99,47 +99,59 @@ sub poll_twitter {
     my $self = shift;
 
     return unless ( time - $self->{last_poll} ) >= 60;
-    $self->{last_poll} = time;
     return unless BarnOwl::getvar('twitter:poll') eq 'on';
 
     return unless $self->get_session();
-    BarnOwl::message("Polling Facebook...");
+#    BarnOwl::message("Polling Facebook...");
 
     sleep 1;
 
     my $timeline = eval { $self->{facebook}->stream->get( start_time => $self->{last_poll} ) };
+
+    $self->{last_poll} = time;
+
     $self->die_on_error($@);
-    use Data::Dumper;
-    warn Dumper($timeline);
+    #use Data::Dumper;
+    #warn Dumper($timeline);
 
 #    if ($self->{cfg}->{show_unsubscribed_replies}) {
 #    }
 
-#    if ( scalar @$timeline ) {
-#        for my $tweet ( reverse @$timeline ) {
-#            if ( $tweet->{id} <= $self->{last_id} ) {
-#                next;
-#            }
-#            my $msg = BarnOwl::Message->new(
-#                type      => 'Twitter',
-#                sender    => $tweet->{user}{screen_name},
-#                recipient => $self->{cfg}->{user} || $self->{user},
-#                direction => 'in',
-#                source    => decode_entities($tweet->{source}),
-#                location  => decode_entities($tweet->{user}{location}||""),
-#                body      => decode_entities($tweet->{text}),
-#                status_id => $tweet->{id},
-#                service   => $self->{cfg}->{service},
-#                account   => $self->{cfg}->{account_nickname},
-#               );
-#            BarnOwl::queue_message($msg);
-#        }
-#        $self->{last_id} = $timeline->[0]{id} if $timeline->[0]{id} > $self->{last_id};
-#    } else {
-#        # BarnOwl::message("No new tweets...");
-#    }
+    # for some reason it returns a hashref when no messages are received 
+    # an an arrayref when messages are received
+    if ( ref($timeline->{posts}) eq 'ARRAY' ) {
+        for my $tweet ( reverse @{$timeline->{posts}} ) {
+            next unless $tweet->{message};
+            my $sender_profile = get_profile_for_id($tweet->{actor_id}, $timeline->{profiles});
+        
+            my $msg = BarnOwl::Message->new(
+                type      => 'Twitter',
+                sender    => $sender_profile->{name},
+                recipient => $self->{cfg}->{user} || $self->{user},
+                direction => 'in',
+                body      => decode_entities($tweet->{message}),
+                status_id => $tweet->{post_id},
+                service   => $self->{cfg}->{service},
+                account   => $self->{cfg}->{account_nickname},
+                zsig      => $sender_profile->{url},
+               );
+            BarnOwl::queue_message($msg);
+        }
+    } else {
+        #BarnOwl::message("No new facebook messages...");
+    }
 }
 
+sub get_profile_for_id {
+    my $id = shift;
+    my $profiles = shift;
+
+    for my $profile (@$profiles) {
+        return $profile if $profile->{id} == $id;
+    }
+
+    return { 'name' => 'no profile found' };
+}
 sub poll_direct {
     my $self = shift;
 
