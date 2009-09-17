@@ -125,6 +125,10 @@ $raw_cfg = [$raw_cfg] unless UNIVERSAL::isa $raw_cfg, "ARRAY";
     }
 }
 
+if (scalar @$raw_cfg == 1 && !exists($raw_cfg->[0]{publish_tweets})) {
+    $raw_cfg->[0]{publish_tweets} = 1;
+}
+
 for my $cfg (@$raw_cfg) {
     my $twitter_args = { username   => $cfg->{user} || $user,
                         password   => $cfg->{password},
