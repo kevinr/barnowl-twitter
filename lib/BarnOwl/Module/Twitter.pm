@@ -125,6 +125,8 @@ $raw_cfg = [$raw_cfg] unless UNIVERSAL::isa $raw_cfg, "ARRAY";
     }
 }
 
+# If there is only a single account, make publish_tweets default to
+# true.
 if (scalar @$raw_cfg == 1 && !exists($raw_cfg->[0]{publish_tweets})) {
     $raw_cfg->[0]{publish_tweets} = 1;
 }
