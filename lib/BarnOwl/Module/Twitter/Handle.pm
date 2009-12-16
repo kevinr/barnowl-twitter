@@ -29,5 +29,4 @@ sub new {
     return BarnOwl::Module::Twitter::Handle::Twitter->new($cfg, @_);
 }
 
-
 1;

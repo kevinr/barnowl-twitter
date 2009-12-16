@@ -25,8 +25,7 @@ use BarnOwl::Module::Twitter::Handle;
 
 our @twitter_handles = ();
 our $default_handle = undef;
-my $user     = BarnOwl::zephyr_getsender();
-my ($class)  = ($user =~ /(^[^@]+)/);
+my $class    = $ENV{USER};
 my $instance = "status";
 my $opcode   = "twitter";
 my $use_reply_to = 0;
@@ -95,8 +94,44 @@ if($@) {
 
 $raw_cfg = [$raw_cfg] unless UNIVERSAL::isa $raw_cfg, "ARRAY";
 
+# Perform some sanity checking on the configuration.
+{
+    my %nicks;
+    my $default = 0;
+
+    for my $cfg (@$raw_cfg) {
+        if(! exists $cfg->{user}) {
+            fail("Account has no username set.");
+        }
+        my $user = $cfg->{user};
+        if(! exists $cfg->{password}) {
+            fail("Account $user has no password set.");
+        }
+        if(@$raw_cfg > 1&&
+           !exists($cfg->{account_nickname}) ) {
+            fail("Account $user has no account_nickname set.");
+        }
+        if($cfg->{account_nickname}) {
+            if($nicks{$cfg->{account_nickname}}++) {
+                fail("Nickname " . $cfg->{account_nickname} . " specified more than once.");
+            }
+        }
+        if($cfg->{default} || $cfg->{default_sender}) {
+            if($default++) {
+                fail("Multiple accounts marked as 'default'.");
+            }
+        }
+    }
+}
+
+# If there is only a single account, make publish_tweets default to
+# true.
+if (scalar @$raw_cfg == 1 && !exists($raw_cfg->[0]{publish_tweets})) {
+    $raw_cfg->[0]{publish_tweets} = 1;
+}
+
 for my $cfg (@$raw_cfg) {
-    my $twitter_args = { username   => $cfg->{user} || $user,
+    my $twitter_args = { username   => $cfg->{user},
                         password   => $cfg->{password},
                         source     => 'barnowl', 
                     };
@@ -125,7 +160,7 @@ for my $cfg (@$raw_cfg) {
     push @twitter_handles, $twitter_handle;
 }
 
-$default_handle = first {$_->{cfg}->{default_sender}} @twitter_handles;
+$default_handle = first {$_->{cfg}->{default}} @twitter_handles;
 if (!$default_handle && @twitter_handles) {
     $default_handle = $twitter_handles[0];
 }
@@ -139,7 +174,8 @@ sub match {
 sub handle_message {
     my $m = shift;
     ($class, $instance, $opcode) = map{BarnOwl::getvar("twitter:$_")} qw(class instance opcode);
-    if($m->sender eq $user
+    if($m->type eq 'zephyr'
+       && $m->sender eq BarnOwl::zephyr_getsender()
        && match($m->class, $class)
        && match($m->instance, $instance)
        && match($m->opcode, $opcode)
