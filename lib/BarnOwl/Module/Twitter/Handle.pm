@@ -14,6 +14,14 @@ Contains everything needed to send and receive messages from a Twitter-like serv
 package BarnOwl::Module::Twitter::Handle;
 
 use Net::Twitter::Lite;
+BEGIN {
+    # Backwards compatibility with version of Net::Twitter::Lite that
+    # lack home_timeline.
+    if(!defined(*Net::Twitter::Lite::home_timeline{CODE})) {
+        *Net::Twitter::Lite::home_timeline =
+          \&Net::Twitter::Lite::friends_timeline;
+    }
+}
 use HTML::Entities;
 
 use BarnOwl;
@@ -68,8 +76,8 @@ sub new {
 
     $self->{twitter}  = Net::Twitter::Lite->new(%twitter_args);
 
-    my $timeline = eval { $self->{twitter}->friends_timeline({count => 1}) };
-    warn "$@" if $@;
+    my $timeline = eval { $self->{twitter}->home_timeline({count => 1}) };
+    warn "$@\n" if $@;
 
     if(!defined($timeline)) {
         $self->fail("Invalid credentials");
@@ -83,13 +91,13 @@ sub new {
     eval {
         $self->{last_direct} = $self->{twitter}->direct_messages()->[0]{id};
     };
-    warn "$@" if $@;
+    warn "$@\n" if $@;
     $self->{last_direct} = 1 unless defined($self->{last_direct});
 
     eval {
         $self->{twitter}->{ua}->timeout(1);
     };
-    warn "$@" if $@;
+    warn "$@\n" if $@;
 
     return $self;
 }
@@ -126,7 +134,7 @@ sub twitter_error {
     my $self = shift;
 
     my $ratelimit = eval { $self->{twitter}->rate_limit_status };
-    warn "$@" if $@;
+    warn "$@\n" if $@;
     unless(defined($ratelimit) && ref($ratelimit) eq 'HASH') {
         # Twitter's just sucking, sleep for 5 minutes
         $self->{last_direct_poll} = $self->{last_poll} = time + 60*5;
@@ -150,8 +158,8 @@ sub poll_twitter {
     $self->{last_poll} = time;
     return unless BarnOwl::getvar('twitter:poll') eq 'on';
 
-    my $timeline = eval { $self->{twitter}->friends_timeline( { since_id => $self->{last_id} } ) };
-    warn "$@" if $@;
+    my $timeline = eval { $self->{twitter}->home_timeline( { since_id => $self->{last_id} } ) };
+    warn "$@\n" if $@;
     unless(defined($timeline) && ref($timeline) eq 'ARRAY') {
         $self->twitter_error();
         return;
@@ -159,7 +167,7 @@ sub poll_twitter {
 
     if ($self->{cfg}->{show_mentions}) {
         my $mentions = eval { $self->{twitter}->mentions( { since_id => $self->{last_id} } ) };
-        warn "$@" if $@;
+        warn "$@\n" if $@;
         unless (defined($mentions) && ref($mentions) eq 'ARRAY') {
             $self->twitter_error();
             return;
@@ -204,7 +212,7 @@ sub poll_direct {
     return unless BarnOwl::getvar('twitter:poll') eq 'on';
 
     my $direct = eval { $self->{twitter}->direct_messages( { since_id => $self->{last_direct} } ) };
-    warn "$@" if $@;
+    warn "$@\n" if $@;
     unless(defined($direct) && ref($direct) eq 'ARRAY') {
         $self->twitter_error();
         return;
@@ -288,6 +296,16 @@ sub twitter_atreply {
     } else {
         $self->twitter("@".$to." ".$msg);
     }
+}
+
+sub twitter_retweet {
+    my $self = shift;
+    my $msg = shift;
+
+    if($msg->service ne $self->{cfg}->{service}) {
+        die("Cannot retweet a message from a different service.\n");
+    }
+    $self->twitter_command(retweet => $msg->{status_id});
 }
 
 sub twitter_follow {
