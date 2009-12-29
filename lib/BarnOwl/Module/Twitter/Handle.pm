@@ -14,6 +14,7 @@ the appropriate service sub-module for the provided arguments.
 
 package BarnOwl::Module::Twitter::Handle;
 
+use Net::Twitter::Lite;
 
 use BarnOwl::Module::Twitter::Handle::Twitter;
 use BarnOwl::Module::Twitter::Handle::Facebook;

@@ -14,6 +14,15 @@ Contains everything needed to send and receive messages from a Twitter-like serv
 package BarnOwl::Module::Twitter::Handle::Twitter;
 
 use Net::Twitter::Lite;
+BEGIN {
+    # Backwards compatibility with version of Net::Twitter::Lite that
+    # lack home_timeline.
+    if(!defined(*Net::Twitter::Lite::home_timeline{CODE})) {
+        *Net::Twitter::Lite::home_timeline =
+          \&Net::Twitter::Lite::friends_timeline;
+    }
+}
+
 use HTML::Entities;
 
 use BarnOwl;
