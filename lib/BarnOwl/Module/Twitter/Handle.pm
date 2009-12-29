@@ -14,7 +14,6 @@ the appropriate service sub-module for the provided arguments.
 
 package BarnOwl::Module::Twitter::Handle;
 
-
 use BarnOwl::Module::Twitter::Handle::Twitter;
 
 sub new {
@@ -22,6 +21,5 @@ sub new {
 
     return BarnOwl::Module::Twitter::Handle::Twitter->new(@_);
 }
-
 
 1;

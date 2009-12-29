@@ -14,6 +14,14 @@ Contains everything needed to send and receive messages from a Twitter-like serv
 package BarnOwl::Module::Twitter::Handle::Twitter;
 
 use Net::Twitter::Lite;
+BEGIN {
+    # Backwards compatibility with version of Net::Twitter::Lite that
+    # lack home_timeline.
+    if(!defined(*Net::Twitter::Lite::home_timeline{CODE})) {
+        *Net::Twitter::Lite::home_timeline =
+          \&Net::Twitter::Lite::friends_timeline;
+    }
+}
 use HTML::Entities;
 
 use BarnOwl;
@@ -31,13 +39,25 @@ sub new {
     my $class = shift;
     my $cfg = shift;
 
+    my $val;
+
+    if(!exists $cfg->{default} &&
+       defined($val = delete $cfg->{default_sender})) {
+        $cfg->{default} = $val;
+    }
+
+    if(!exists $cfg->{show_mentions} &&
+       defined($val = delete $cfg->{show_unsubscribed_replies})) {
+        $cfg->{show_mentions} = $val;
+    }
+
     $cfg = {
         account_nickname => '',
-        default_sender   => 0,
+        default          => 0,
         poll_for_tweets  => 1,
         poll_for_dms     => 1,
-        publish_tweets   => 1,
-        show_unsubscribed_replies => 1,
+        publish_tweets   => 0,
+        show_mentions    => 1,
         %$cfg
        };
 
@@ -56,8 +76,8 @@ sub new {
 
     $self->{twitter}  = Net::Twitter::Lite->new(%twitter_args);
 
-    my $timeline = eval { $self->{twitter}->friends_timeline({count => 1}) };
-    warn "$@" if $@;
+    my $timeline = eval { $self->{twitter}->home_timeline({count => 1}) };
+    warn "$@\n" if $@;
 
     if(!defined($timeline)) {
         $self->fail("Invalid credentials");
@@ -71,22 +91,50 @@ sub new {
     eval {
         $self->{last_direct} = $self->{twitter}->direct_messages()->[0]{id};
     };
-    warn "$@" if $@;
+    warn "$@\n" if $@;
     $self->{last_direct} = 1 unless defined($self->{last_direct});
 
     eval {
         $self->{twitter}->{ua}->timeout(1);
     };
-    warn "$@" if $@;
+    warn "$@\n" if $@;
 
     return $self;
+}
+
+=head2 twitter_command COMMAND ARGS...
+
+Call the specified method on $self->{twitter} with an extended
+timeout. This is intended for interactive commands, with the theory
+that if the user explicitly requested an action, it is slightly more
+acceptable to hang the UI for a second or two than to fail just
+because Twitter is being slightly slow. Polling commands should be
+called normally, with the default (short) timeout, to prevent
+background Twitter suckage from hosing the UI normally.
+
+=cut
+
+sub twitter_command {
+    my $self = shift;
+    my $cmd = shift;
+
+    eval { $self->{twitter}->{ua}->timeout(5); };
+    my $result = eval {
+        $self->{twitter}->$cmd(@_);
+    };
+    my $error = $@;
+    eval { $self->{twitter}->{ua}->timeout(1); };
+    if ($error) {
+        die($error);
+    }
+    return $result;
 }
 
 sub twitter_error {
     my $self = shift;
 
     my $ratelimit = eval { $self->{twitter}->rate_limit_status };
-    warn "$@" if $@;
+    warn "$@\n" if $@;
     unless(defined($ratelimit) && ref($ratelimit) eq 'HASH') {
         # Twitter's just sucking, sleep for 5 minutes
         $self->{last_direct_poll} = $self->{last_poll} = time + 60*5;
@@ -110,16 +158,16 @@ sub poll_twitter {
     $self->{last_poll} = time;
     return unless BarnOwl::getvar('twitter:poll') eq 'on';
 
-    my $timeline = eval { $self->{twitter}->friends_timeline( { since_id => $self->{last_id} } ) };
-    warn "$@" if $@;
+    my $timeline = eval { $self->{twitter}->home_timeline( { since_id => $self->{last_id} } ) };
+    warn "$@\n" if $@;
     unless(defined($timeline) && ref($timeline) eq 'ARRAY') {
         $self->twitter_error();
         return;
     };
 
-    if ($self->{cfg}->{show_unsubscribed_replies}) {
+    if ($self->{cfg}->{show_mentions}) {
         my $mentions = eval { $self->{twitter}->mentions( { since_id => $self->{last_id} } ) };
-        warn "$@" if $@;
+        warn "$@\n" if $@;
         unless (defined($mentions) && ref($mentions) eq 'ARRAY') {
             $self->twitter_error();
             return;
@@ -164,7 +212,7 @@ sub poll_direct {
     return unless BarnOwl::getvar('twitter:poll') eq 'on';
 
     my $direct = eval { $self->{twitter}->direct_messages( { since_id => $self->{last_direct} } ) };
-    warn "$@" if $@;
+    warn "$@\n" if $@;
     unless(defined($direct) && ref($direct) eq 'ARRAY') {
         $self->twitter_error();
         return;
@@ -181,7 +229,7 @@ sub poll_direct {
                 direction => 'in',
                 location  => decode_entities($tweet->{sender}{location}||""),
                 body      => decode_entities($tweet->{text}),
-                isprivate => 'true',
+                private => 'true',
                 service   => $self->{cfg}->{service},
                 account   => $self->{cfg}->{account_nickname},
                );
@@ -202,14 +250,13 @@ sub twitter {
     if($msg =~ m{\Ad\s+([^\s])+(.*)}sm) {
         $self->twitter_direct($1, $2);
     } elsif(defined $self->{twitter}) {
-        if(defined($reply_to)) {
-            $self->{twitter}->update({
-                status => $msg,
-                in_reply_to_status_id => $reply_to
-               });
-        } else {
-            $self->{twitter}->update($msg);
+        if(length($msg) > 140) {
+            die("Twitter: Message over 140 characters long.\n");
         }
+        $self->twitter_command('update', {
+            status => $msg,
+            defined($reply_to) ? (in_reply_to_status_id => $reply_to) : ()
+           });
     }
 }
 
@@ -219,7 +266,7 @@ sub twitter_direct {
     my $who = shift;
     my $msg = shift;
     if(defined $self->{twitter}) {
-        $self->{twitter}->new_direct_message({
+        $self->twitter_command('new_direct_message', {
             user => $who,
             text => $msg
            });
@@ -230,7 +277,7 @@ sub twitter_direct {
                 recipient => $who, 
                 direction => 'out',
                 body      => $msg,
-                isprivate => 'true',
+                private => 'true',
                 service   => $self->{cfg}->{service},
                );
             BarnOwl::queue_message($tweet);
@@ -251,12 +298,22 @@ sub twitter_atreply {
     }
 }
 
+sub twitter_retweet {
+    my $self = shift;
+    my $msg = shift;
+
+    if($msg->service ne $self->{cfg}->{service}) {
+        die("Cannot retweet a message from a different service.\n");
+    }
+    $self->twitter_command(retweet => $msg->{status_id});
+}
+
 sub twitter_follow {
     my $self = shift;
 
     my $who = shift;
 
-    my $user = $self->{twitter}->create_friend($who);
+    my $user = $self->twitter_command('create_friend', $who);
     # returns a string on error
     if (defined $user && !ref $user) {
         BarnOwl::message($user);
@@ -270,7 +327,7 @@ sub twitter_unfollow {
 
     my $who = shift;
 
-    my $user = $self->{twitter}->destroy_friend($who);
+    my $user = $self->twitter_command('destroy_friend', $who);
     # returns a string on error
     if (defined $user && !ref $user) {
         BarnOwl::message($user);
