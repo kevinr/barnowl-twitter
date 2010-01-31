@@ -22,14 +22,12 @@ use List::Util qw(first);
 use BarnOwl;
 use BarnOwl::Hooks;
 use BarnOwl::Module::Twitter::Handle;
+use BarnOwl::Module::Twitter::Completion;
 
 our @twitter_handles = ();
 our $default_handle = undef;
-my $class    = $ENV{USER};
-my $instance = "status";
-my $opcode   = "twitter";
-my $use_reply_to = 0;
-my $next_service_to_poll = 0;
+
+our $prefix;
 
 my $desc = <<'END_DESC';
 BarnOwl::Module::Twitter will watch for authentic zephyrs to
@@ -42,7 +40,7 @@ END_DESC
 BarnOwl::new_variable_string(
     'twitter:class',
     {
-        default     => $class,
+        default     => $ENV{USER},
         summary     => 'Class to watch for Twitter messages',
         description => $desc
     }
@@ -50,7 +48,7 @@ BarnOwl::new_variable_string(
 BarnOwl::new_variable_string(
     'twitter:instance',
     {
-        default => $instance,
+        default => 'status',
         summary => 'Instance on twitter:class to watch for Twitter messages.',
         description => $desc
     }
@@ -58,7 +56,7 @@ BarnOwl::new_variable_string(
 BarnOwl::new_variable_string(
     'twitter:opcode',
     {
-        default => $opcode,
+        default => 'twitter',
         summary => 'Opcode for zephyrs that will be sent as twitter updates',
         description => $desc
     }
@@ -173,7 +171,7 @@ sub match {
 
 sub handle_message {
     my $m = shift;
-    ($class, $instance, $opcode) = map{BarnOwl::getvar("twitter:$_")} qw(class instance opcode);
+    my ($class, $instance, $opcode) = map{BarnOwl::getvar("twitter:$_")} qw(class instance opcode);
     if($m->type eq 'zephyr'
        && $m->sender eq BarnOwl::zephyr_getsender()
        && match($m->class, $class)
@@ -187,13 +185,15 @@ sub handle_message {
 }
 
 sub poll_messages {
-    return unless @twitter_handles;
+    # If we are reloaded into a barnowl with the old
+    # BarnOwl::Module::Twitter loaded, it still has a main loop hook
+    # that will call this function every second. If we just delete it,
+    # it will get the old version, which will call poll on each of our
+    # handles every second. However, they no longer include the time
+    # check, and so we will poll a handle every second until
+    # ratelimited.
 
-    my $handle = $twitter_handles[$next_service_to_poll];
-    $next_service_to_poll = ($next_service_to_poll + 1) % scalar(@twitter_handles);
-    
-    $handle->poll_twitter() if $handle->{cfg}->{poll_for_tweets};
-    $handle->poll_direct() if $handle->{cfg}->{poll_for_dms};
+    # So we include an empty function here.
 }
 
 sub find_account {
@@ -284,6 +284,16 @@ BarnOwl::new_command( 'twitter-unfollow' => sub { cmd_twitter_unfollow(@_); },
     }
 );
 
+BarnOwl::new_command('twitter-count-chars' => \&cmd_count_chars, {
+    summary     => 'Count the number of characters in the edit window',
+    usage       => 'twitter-count-chars',
+    description => <<END_DESCRIPTION
+Displays the number of characters entered in the edit window so far. Correctly
+takes into account any \@user prefix that will be added by the Twitter plugin.
+END_DESCRIPTION
+   });
+
+
 sub cmd_twitter {
     my $cmd = shift;
     my $account = shift;
@@ -294,6 +304,7 @@ sub cmd_twitter {
             return;
         }
     }
+    undef $prefix;
     BarnOwl::start_edit_win("What's happening?" . (defined $account ? " ($account)" : ""), sub{twitter($account, shift)});
 }
 
@@ -302,6 +313,7 @@ sub cmd_twitter_direct {
     my $user = shift;
     die("Usage: $cmd USER\n") unless $user;
     my $account = find_account_default(shift);
+    undef $prefix;
     BarnOwl::start_edit_win("$cmd $user " . ($account->nickname||""),
                             sub { $account->twitter_direct($user, shift) });
 }
@@ -312,6 +324,7 @@ sub cmd_twitter_atreply {
     my $id   = shift;
     my $account = find_account_default(shift);
 
+    $prefix = "\@$user ";
     BarnOwl::start_edit_win("Reply to \@" . $user . ($account->nickname ? (" on " . $account->nickname) : ""),
                             sub { $account->twitter_atreply($user, $id, shift) });
 }
@@ -326,6 +339,7 @@ sub cmd_twitter_retweet {
 
     $account = $m->account unless defined($account);
     find_account($account)->twitter_retweet($m);
+    return;
 }
 
 sub cmd_twitter_follow {
@@ -344,13 +358,19 @@ sub cmd_twitter_unfollow {
     find_account_default($account)->twitter_unfollow($user);
 }
 
-eval {
-    $BarnOwl::Hooks::receiveMessage->add("BarnOwl::Module::Twitter::handle_message");
-    $BarnOwl::Hooks::mainLoop->add("BarnOwl::Module::Twitter::poll_messages");
-};
-if($@) {
-    $BarnOwl::Hooks::receiveMessage->add(\&handle_message);
-    $BarnOwl::Hooks::mainLoop->add(\&poll_messages);
+use BarnOwl::Editwin qw(:all);
+sub cmd_count_chars {
+    my $cmd = shift;
+    my $text = save_excursion {
+        move_to_buffer_start();
+        set_mark();
+        move_to_buffer_end();
+        get_region();
+    };
+    my $len = length($text);
+    $len += length($prefix) if $prefix;
+    BarnOwl::message($len);
+    return $len;
 }
 
 BarnOwl::filter(qw{twitter type ^twitter$});

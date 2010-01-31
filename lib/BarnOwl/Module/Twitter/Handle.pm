@@ -24,8 +24,11 @@ BEGIN {
 }
 use HTML::Entities;
 
+use Scalar::Util qw(weaken);
+
 use BarnOwl;
 use BarnOwl::Message::Twitter;
+use POSIX qw(asctime);
 
 sub fail {
     my $self = shift;
@@ -64,10 +67,10 @@ sub new {
     my $self = {
         'cfg'  => $cfg,
         'twitter' => undef,
-        'last_poll' => 0,
-        'last_direct_poll' => 0,
         'last_id' => undef,
         'last_direct' => undef,
+        'timer'        => undef,
+        'direct_timer' => undef
     };
 
     bless($self, $class);
@@ -99,7 +102,39 @@ sub new {
     };
     warn "$@\n" if $@;
 
+    $self->sleep(0);
+
     return $self;
+}
+
+=head2 sleep SECONDS
+
+Stop polling Twitter for SECONDS seconds.
+
+=cut
+
+sub sleep {
+    my $self  = shift;
+    my $delay = shift;
+
+    my $weak = $self;
+    weaken($weak);
+
+    if($self->{cfg}->{poll_for_tweets}) {
+        $self->{timer} = BarnOwl::Timer->new({
+            after    => $delay,
+            interval => 90,
+            cb       => sub { $weak->poll_twitter if $weak }
+           });
+    }
+
+    if($self->{cfg}->{poll_for_dms}) {
+        $self->{direct_timer} = BarnOwl::Timer->new({
+            after    => $delay,
+            interval => 180,
+            cb       => sub { $weak->poll_direct if $weak }
+           });
+    }
 }
 
 =head2 twitter_command COMMAND ARGS...
@@ -134,32 +169,36 @@ sub twitter_error {
     my $self = shift;
 
     my $ratelimit = eval { $self->{twitter}->rate_limit_status };
-    warn "$@\n" if $@;
+    BarnOwl::debug($@) if $@;
     unless(defined($ratelimit) && ref($ratelimit) eq 'HASH') {
-        # Twitter's just sucking, sleep for 5 minutes
-        $self->{last_direct_poll} = $self->{last_poll} = time + 60*5;
-        # die("Twitter seems to be having problems.\n");
+        # Twitter's probably just sucking, try again later.
+        $self->sleep(5*60);
         return;
     }
+
     if(exists($ratelimit->{remaining_hits})
        && $ratelimit->{remaining_hits} <= 0) {
-        $self->{last_direct_poll} = $self->{last_poll} = $ratelimit->{reset_time_in_seconds};
-        die("Twitter: ratelimited until " . $ratelimit->{reset_time} . "\n");
+        my $timeout = $ratelimit->{reset_time_in_seconds};
+        $self->sleep($timeout - time + 60);
+        BarnOwl::error("Twitter" .
+                       ($self->{cfg}->{account_nickname} ?
+                        "[$self->{cfg}->{account_nickname}]" : "") .
+                        ": ratelimited until " . asctime(localtime($timeout)));
     } elsif(exists($ratelimit->{error})) {
+        $self->sleep(60*20);
         die("Twitter: ". $ratelimit->{error} . "\n");
-        $self->{last_direct_poll} = $self->{last_poll} = time + 60*20;
     }
 }
 
 sub poll_twitter {
     my $self = shift;
 
-    return unless ( time - $self->{last_poll} ) >= 60;
-    $self->{last_poll} = time;
     return unless BarnOwl::getvar('twitter:poll') eq 'on';
 
+    BarnOwl::debug("Polling " . $self->{cfg}->{account_nickname});
+
     my $timeline = eval { $self->{twitter}->home_timeline( { since_id => $self->{last_id} } ) };
-    warn "$@\n" if $@;
+    BarnOwl::debug($@) if $@;
     unless(defined($timeline) && ref($timeline) eq 'ARRAY') {
         $self->twitter_error();
         return;
@@ -167,7 +206,7 @@ sub poll_twitter {
 
     if ($self->{cfg}->{show_mentions}) {
         my $mentions = eval { $self->{twitter}->mentions( { since_id => $self->{last_id} } ) };
-        warn "$@\n" if $@;
+        BarnOwl::debug($@) if $@;
         unless (defined($mentions) && ref($mentions) eq 'ARRAY') {
             $self->twitter_error();
             return;
@@ -207,12 +246,12 @@ sub poll_twitter {
 sub poll_direct {
     my $self = shift;
 
-    return unless ( time - $self->{last_direct_poll}) >= 120;
-    $self->{last_direct_poll} = time;
     return unless BarnOwl::getvar('twitter:poll') eq 'on';
 
+    BarnOwl::debug("Polling direct for " . $self->{cfg}->{account_nickname});
+
     my $direct = eval { $self->{twitter}->direct_messages( { since_id => $self->{last_direct} } ) };
-    warn "$@\n" if $@;
+    BarnOwl::debug($@) if $@;
     unless(defined($direct) && ref($direct) eq 'ARRAY') {
         $self->twitter_error();
         return;
@@ -258,6 +297,7 @@ sub twitter {
             defined($reply_to) ? (in_reply_to_status_id => $reply_to) : ()
            });
     }
+    $self->poll_twitter;
 }
 
 sub twitter_direct {
@@ -306,6 +346,7 @@ sub twitter_retweet {
         die("Cannot retweet a message from a different service.\n");
     }
     $self->twitter_command(retweet => $msg->{status_id});
+    $self->poll_twitter;
 }
 
 sub twitter_follow {
